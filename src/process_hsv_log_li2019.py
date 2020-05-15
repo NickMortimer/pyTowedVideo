@@ -7,10 +7,10 @@ import glob
 from pyproj import Geod
 from pyproj import Proj
 import numpy as np
-from fastkml import kml
-from fastkml import styles
+#from fastkml import kml
+#from fastkml import styles
 from shapely.geometry import LineString
-import simplekml
+from simplekml import Kml, Model, AltitudeMode, Orientation, Color
 
 
 sourcepath = 'S:/HSV/Log Files/clean/'
@@ -205,34 +205,41 @@ def task_make_kml():
         :param targets: list of file to output
         :return:
         """
-        ns = '{http://www.opengis.net/kml/2.2}'
-        k = kml.KML()
-        d = kml.Document(ns, 'docid', 'LI2019_V05', 'HSV Camera Tows')
-        k.append(d)
-        ship = kml.Folder(ns, 'id3', 'Ship', 'Ships position')
-        camera = kml.Folder(ns, 'id4', 'Camera', 'Camera position')
-        d.append(ship)
-        d.append(camera)
+        kml = Kml()
+        ship = kml.newdocument(name='ship')
+        camera = kml.newdocument(name='camera')
+
         inputs = list(dependencies)
         inputs.sort()
         for dep in inputs:
             log = pd.read_csv(dep,index_col='timestamp',parse_dates=['timestamp'])
             log =log.resample('10S').first()
+            log['Time'] = log.index
+            log['Depth'] =0
             item = log.iloc[0]
-            p = kml.Placemark(ns, f'operation {int(item.Operation):03d}', f'Operation {int(item.Operation):03d}',f'Site {item.Site}')
-            p.append_style(kml.Style(styles=[styles.LineStyle(color='ff00ff00',width=3)]))
-            p.geometry =  LineString(zip(log.ShipLongitude.interpolate(),log.ShipLatitude.interpolate(),np.zeros((len(log.UsblLongitude),1))))
-            p.timeStamp =log.index[0].strftime('%Y-%m-%dT%H:%M:%S')
-            ship.append(p)
-            p = kml.Placemark(ns, f'operation {int(item.Operation):03d}', f'Operation {int(item.Operation):03d}',f'Site {item.Site}')
-            p.append_style(kml.Style(styles=[styles.LineStyle(color='ff0000ff',width=3)]))
-            p.geometry =  LineString(zip(log.UsblLongitude.interpolate(),log.UsblLatitude.interpolate(),np.zeros((len(log.UsblLongitude),1))))
-            p.timeStamp =log.index[0].strftime('%Y-%m-%dT%H:%M:%S')
-            camera.append(p)
-            
-
-        with open(list(targets)[0], "w") as outfile:
-            outfile.write(k.to_string(prettyprint=True))
+            track = ship.newgxtrack(name=f'operation {int(item.Operation):03d}', altitudemode=AltitudeMode.clamptoground,
+                     description=f'Site {item.Site}')
+            track.stylemap.normalstyle.iconstyle.icon.href = 'http://earth.google.com/images/kml-icons/track-directional/track-0.png'
+            track.stylemap.normalstyle.linestyle.color = Color.green
+            track.stylemap.normalstyle.linestyle.width = 6
+            track.stylemap.highlightstyle.iconstyle.icon.href = 'http://earth.google.com/images/kml-icons/track-directional/track-0.png'
+            track.stylemap.highlightstyle.iconstyle.scale = 1.2
+            track.stylemap.highlightstyle.linestyle.color = '99ffac59'
+            track.stylemap.highlightstyle.linestyle.width = 8
+            track.newgxcoord(list(zip(log.ShipLongitude.interpolate().values,log.ShipLatitude.interpolate().values,log.Depth.interpolate())))
+            track.newwhen(list(log.Time.dt.strftime('%Y-%m-%dT%H:%M:%S').values))
+            track = camera.newgxtrack(name=f'operation {int(item.Operation):03d}', altitudemode=AltitudeMode.relativetoground,
+                     description=f'Site {item.Site}')
+            track.newgxcoord(list(zip(log.UsblLongitude.interpolate(),log.UsblLatitude.interpolate(),-log.HSVPressure)))
+            track.newwhen(list(log.Time.dt.strftime('%Y-%m-%dT%H:%M:%S').values))
+            track.stylemap.normalstyle.iconstyle.icon.href = 'http://earth.google.com/images/kml-icons/track-directional/track-0.png'
+            track.stylemap.normalstyle.linestyle.color = Color.red
+            track.stylemap.normalstyle.linestyle.width = 6
+            track.stylemap.highlightstyle.iconstyle.icon.href = 'http://earth.google.com/images/kml-icons/track-directional/track-0.png'
+            track.stylemap.highlightstyle.iconstyle.scale = 1.2
+            track.stylemap.highlightstyle.linestyle.color = '99ffac59'
+            track.stylemap.highlightstyle.linestyle.width = 8
+        kml.save(list(targets)[0])
     
     os.makedirs(outputpath,exist_ok=True)
     files = glob.glob(f'{outputpath}HSV_LOG*.CSV')
