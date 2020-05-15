@@ -7,6 +7,11 @@ import glob
 from pyproj import Geod
 from pyproj import Proj
 import numpy as np
+from fastkml import kml
+from fastkml import styles
+from shapely.geometry import LineString
+import simplekml
+
 
 sourcepath = 'S:/HSV/Log Files/clean/'
 outputpath = 'S:/LI2019_V05/HSV/DATA/LOG/'
@@ -82,11 +87,13 @@ def get_median_filtered(signal, threshold=3):
 
 
 
+
 def process_file(file):
+
     log =pd.read_json(file,lines=True).set_index('timestamp')
     sonardyne ='.*X:(?P<X>[0-9-]*\.[0-9]*).*Y:(?P<Y>[0-9-]*\.[0-9]*).*D:(?P<D>[0-9-]*\.[0-9]*).*H:(?P<H>[0-9-]*\.[0-9]*)'
     sondardyne_raw=log[log.message=="linnaeus.sonardyne_scout.usbl.raw"]['data'].str.extract(sonardyne)[['X','Y','D','H']].astype(float).dropna()
-
+    meta_data = log[(log.message=='csiro.project.deployment.metadata')]['data'].iloc[0]
     hsv_position  = pd.DataFrame.from_records(log[(log.message=="hsv.application.position.eng") | ( log.message=="hsv.sonardyne_scout.calculated_beacon_position.eng")].apply(process_postion,axis=1)).set_index('timestamp')
     hsv_pressure  = pd.DataFrame.from_records(log[log.message=="hsv.pressure.telemetry.eng"].apply(process_pressure,axis=1)).set_index('timestamp')
     ship_position = pd.DataFrame.from_records(log[log.message=="linnaeus.furuno.gps.eng"].apply(process_postion,axis=1)).set_index('timestamp')
@@ -129,6 +136,7 @@ def process_file(file):
     ship_heading['ShipHeadingSmoothed'] =np.rad2deg(np.arctan2(ship_heading['v'],ship_heading['u']))
 
 
+
     ship_heading.loc[ ship_heading.ShipHeadingSmoothed<0,'ShipHeadingSmoothed'] = 360+ship_heading.loc[ ship_heading.ShipHeadingSmoothed<0,'ShipHeadingSmoothed']
     position_data = pd.concat([sondardyne_raw,ship_position,ship_heading,hsv_position,hsv_altitude,hsv_pressure],sort=False).sort_index()
 
@@ -146,7 +154,17 @@ def process_file(file):
     sondardyne_raw['RawDistance']=np.power(np.power(sondardyne_raw.X,2) + np.power(sondardyne_raw.Y,2),0.5)
     sondardyne_raw['UsblDistance']=np.power(np.power(sondardyne_raw.UsblEasting - sondardyne_raw.ShipEasting,2) + np.power(sondardyne_raw.UsblNorthing - sondardyne_raw.ShipNorthing,2),0.5)
     sondardyne_raw['UtmCode'] = 'epsg:{0:1.5}'.format(utmcode)
+    sondardyne_raw['Operation'] = int(meta_data['operation_number'])
+    sondardyne_raw['Site'] = int(meta_data['site_id'])
+    sondardyne_raw['Voyage'] = meta_data['voyage_number']
+    usbllong,usbllat=utmproj(sondardyne_raw.UsblEasting.values,sondardyne_raw.UsblNorthing.values,inverse=True)
+    sondardyne_raw['UsblLongitude'] = usbllong
+    sondardyne_raw['UsblLatitude'] = usbllat
+    
+
     return sondardyne_raw
+
+
 
 
 def task_convert_json_log():
@@ -171,11 +189,63 @@ def task_convert_json_log():
             'name': str(file),
             'actions': [(action, [], )],
             # 'task' keyword arg is added automatically
-            'targets': [outputpath+basename.replace('.json','.csv')],
+            'targets': [(outputpath+basename.replace('HSV','HSV_LOG')+'.CSV')],
             'file_dep': [file],
             'uptodate': [True, ],
             'clean': True,
         }
+
+def task_make_kml():
+    """ convert HSV json logs to csv
+    """
+    def action(dependencies,targets):
+        """
+
+        :param dependencies: list of files to process
+        :param targets: list of file to output
+        :return:
+        """
+        ns = '{http://www.opengis.net/kml/2.2}'
+        k = kml.KML()
+        d = kml.Document(ns, 'docid', 'LI2019_V05', 'HSV Camera Tows')
+        k.append(d)
+        ship = kml.Folder(ns, 'id3', 'Ship', 'Ships position')
+        camera = kml.Folder(ns, 'id4', 'Camera', 'Camera position')
+        d.append(ship)
+        d.append(camera)
+        inputs = list(dependencies)
+        inputs.sort()
+        for dep in inputs:
+            log = pd.read_csv(dep,index_col='timestamp',parse_dates=['timestamp'])
+            log =log.resample('10S').first()
+            item = log.iloc[0]
+            p = kml.Placemark(ns, f'operation {int(item.Operation):03d}', f'Operation {int(item.Operation):03d}',f'Site {item.Site}')
+            p.append_style(kml.Style(styles=[styles.LineStyle(color='ff00ff00',width=3)]))
+            p.geometry =  LineString(zip(log.ShipLongitude.interpolate(),log.ShipLatitude.interpolate(),np.zeros((len(log.UsblLongitude),1))))
+            p.timeStamp =log.index[0].strftime('%Y-%m-%dT%H:%M:%S')
+            ship.append(p)
+            p = kml.Placemark(ns, f'operation {int(item.Operation):03d}', f'Operation {int(item.Operation):03d}',f'Site {item.Site}')
+            p.append_style(kml.Style(styles=[styles.LineStyle(color='ff0000ff',width=3)]))
+            p.geometry =  LineString(zip(log.UsblLongitude.interpolate(),log.UsblLatitude.interpolate(),np.zeros((len(log.UsblLongitude),1))))
+            p.timeStamp =log.index[0].strftime('%Y-%m-%dT%H:%M:%S')
+            camera.append(p)
+            
+
+        with open(list(targets)[0], "w") as outfile:
+            outfile.write(k.to_string(prettyprint=True))
+    
+    os.makedirs(outputpath,exist_ok=True)
+    files = glob.glob(f'{outputpath}HSV_LOG*.CSV')
+    output = f'{outputpath}HSV_LOG_LI2019_V05.KML'
+    return {
+            'actions': [(action, [], )],
+            # 'task' keyword arg is added automatically
+            'targets': [output],
+            'file_dep': files,
+            'uptodate': [True, ],
+            'clean': True,
+        }
+
 
 if __name__ == '__main__':
     import doit
